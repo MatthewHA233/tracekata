@@ -1,0 +1,95 @@
+{
+  "name": "tracekata",
+  "displayName": "TraceKata",
+  "description": "在 VSCode 里布置和运行 TraceKata 手敲练习。",
+  "version": "0.3.0",
+  "publisher": "tracekata",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.92.0"
+  },
+  "categories": ["Education", "Other"],
+  "activationEvents": [
+    "onView:tracekata.control",
+    "onView:tracekata.memos"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tracekata.setupExerciseScene",
+        "title": "TraceKata: 布置练习现场"
+      },
+      {
+        "command": "tracekata.captureMemo",
+        "title": "TraceKata: 收成锚点 Memo"
+      },
+      {
+        "command": "tracekata.openMemoTimeline",
+        "title": "TraceKata: 打开 Memo 时间流"
+      },
+      {
+        "command": "tracekata.refreshViews",
+        "title": "TraceKata: 刷新"
+      },
+      {
+        "command": "tracekata.runExercise",
+        "title": "TraceKata: 运行练习"
+      },
+      {
+        "command": "tracekata.openIndex",
+        "title": "TraceKata: 打开题目索引"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "tracekata",
+          "title": "TraceKata",
+          "icon": "media/tracekata.svg"
+        }
+      ]
+    },
+    "views": {
+      "tracekata": [
+        {
+          "id": "tracekata.control",
+          "name": "轨道练习"
+        },
+        {
+          "id": "tracekata.memos",
+          "name": "锚点 Memo"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "tracekata.refreshViews",
+          "when": "view == tracekata.control",
+          "group": "navigation"
+        },
+        {
+          "command": "tracekata.openMemoTimeline",
+          "when": "view == tracekata.memos",
+          "group": "navigation"
+        },
+        {
+          "command": "tracekata.captureMemo",
+          "when": "view == tracekata.memos",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "test:smoke": "npm run compile && node scripts/smoke-test.mjs",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/vscode": "^1.92.0",
+    "typescript": "^5.8.3"
+  }
+}

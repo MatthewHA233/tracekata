@@ -1,0 +1,679 @@
+:root {
+  color: #202421;
+  background: #f5f6f4;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  font-synthesis: none;
+  line-height: 1.5;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 720px;
+  min-height: 100vh;
+  background: #f5f6f4;
+}
+
+button,
+input,
+textarea {
+  color: inherit;
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.loading-screen {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+}
+
+/* 侧栏（项目/轨道）+ 练习列 + 详情 */
+
+.layout {
+  display: flex;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 230px;
+  flex-shrink: 0;
+  border-right: 1px solid #dfe2dd;
+  background: #eef0ec;
+  overflow: hidden;
+  transition: width 0.28s cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.sidebar.collapsed {
+  width: 46px;
+}
+
+/* 内容固定宽度，收缩时被裁剪而不是被挤压换行 */
+.sidebar-inner {
+  display: flex;
+  flex-direction: column;
+  width: 230px;
+  height: 100%;
+}
+
+.sidebar-top {
+  padding: 10px 8px 0;
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #5a6157;
+}
+
+.icon-button:hover {
+  background: #e2e5e0;
+  color: #202421;
+}
+
+.sidebar-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  opacity: 1;
+  transition: opacity 0.18s ease;
+}
+
+.sidebar.collapsed .sidebar-content {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px 8px;
+}
+
+.nav-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px;
+  text-align: left;
+}
+
+.row-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  color: #5a6157;
+}
+
+.nav-row.active .row-icon,
+.track-row.selected .row-icon {
+  color: #202421;
+}
+
+.nav-row:hover {
+  background: #e2e5e0;
+}
+
+.nav-row.active {
+  background: #d8ded5;
+  font-weight: 600;
+}
+
+.nav-row.primary {
+  font-weight: 600;
+}
+
+.project-section {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 8px 4px;
+}
+
+.section-label {
+  margin: 0 0 4px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #8a9086;
+}
+
+.project-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 4px 0 2px;
+  border-radius: 8px;
+}
+
+.project-row:hover {
+  background: #e2e5e0;
+}
+
+.project-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 0 6px 10px;
+  border: none;
+  background: transparent;
+  text-align: left;
+}
+
+.hover-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.project-row:hover .hover-controls,
+.project-row.menu-open .hover-controls {
+  opacity: 1;
+}
+
+.mini-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #5a6157;
+}
+
+.mini-icon:hover {
+  background: #d0d6cc;
+  color: #202421;
+}
+
+.menu {
+  position: absolute;
+  top: 100%;
+  right: 6px;
+  z-index: 10;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid #dfe2dd;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  font-size: 13px;
+}
+
+.menu button:hover {
+  background: #eef0ec;
+}
+
+.rename-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid #b9c1b4;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 13px;
+}
+
+/* 轨道列表折叠动画 */
+.track-fold {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.28s cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.track-fold.folded {
+  grid-template-rows: 0fr;
+}
+
+.track-fold > .track-list {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.project-name {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.track-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  /* 左侧 34px = 项目行内边距 10 + 文件夹图标 16 + 间距 8，让轨道名和项目名文字对齐 */
+  padding: 7px 10px 7px 34px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  font-size: 13px;
+}
+
+.track-row:hover {
+  background: #e2e5e0;
+}
+
+.track-row.selected {
+  background: #d8ded5;
+  font-weight: 600;
+}
+
+.track-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #8a9086;
+}
+
+.track-expand {
+  width: 100%;
+  padding: 6px 10px 6px 34px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font-size: 12px;
+  color: #8a9086;
+}
+
+.track-expand:hover {
+  color: #202421;
+}
+
+.sidebar-foot {
+  padding: 8px;
+  border-top: 1px solid #dfe2dd;
+}
+
+/* 中间练习列 */
+
+.exercise-column {
+  display: flex;
+  flex-direction: column;
+  width: 200px;
+  flex-shrink: 0;
+  border-right: 1px solid #dfe2dd;
+  background: #f3f4f1;
+  padding: 12px 8px;
+}
+
+.exercise-column .section-label {
+  margin-bottom: 8px;
+}
+
+.exercise-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.exercise-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  font-size: 13px;
+}
+
+.exercise-row:hover {
+  background: #e2e5e0;
+}
+
+.exercise-row.selected {
+  background: #d8ded5;
+  font-weight: 600;
+}
+
+.exercise-id {
+  font-variant-numeric: tabular-nums;
+  color: #5a6157;
+}
+
+.exercise-row.selected .exercise-id {
+  color: #202421;
+}
+
+.exercise-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exercise-mark {
+  width: 14px;
+  text-align: center;
+  color: #4a7c52;
+}
+
+/* 右侧详情 */
+
+.detail {
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.notice {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #e4eadf;
+  font-size: 13px;
+}
+
+.notice.error {
+  background: #f3e0dc;
+}
+
+.detail-head h2 {
+  margin: 0 0 4px;
+  font-size: 19px;
+}
+
+.base-hint {
+  margin: 0;
+  color: #5a6157;
+  font-size: 13px;
+}
+
+.file-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.file-group h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5a6157;
+}
+
+.file-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid #dfe2dd;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+}
+
+.file-row:hover {
+  border-color: #b9c1b4;
+}
+
+.file-name {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+}
+
+.status {
+  font-size: 11px;
+  color: #4a7c52;
+}
+
+.status.warn {
+  color: #a4543e;
+}
+
+.status.quiet {
+  color: #8a9086;
+}
+
+.action-row {
+  display: flex;
+  gap: 10px;
+}
+
+.main-button {
+  padding: 10px 18px;
+  border: 1px solid #cfd3cc;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 14px;
+}
+
+.main-button:hover {
+  border-color: #b9c1b4;
+}
+
+.main-button.strong {
+  background: #2e5638;
+  border-color: #2e5638;
+  color: #fff;
+}
+
+.main-button.strong:hover {
+  background: #3a6a46;
+}
+
+.run-panel {
+  border: 1px solid #dfe2dd;
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.run-command {
+  display: flex;
+  justify-content: space-between;
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid #eef0ec;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  color: #5a6157;
+}
+
+.run-status {
+  color: #a4543e;
+}
+
+.run-panel pre {
+  margin: 0;
+  padding: 12px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 60px;
+}
+
+/* 锚点记录 */
+
+.memo-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.memo-form input,
+.memo-form textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #dfe2dd;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+  resize: vertical;
+}
+
+.memo-form-foot {
+  display: flex;
+  gap: 8px;
+}
+
+.memo-form-foot input {
+  flex: 1;
+}
+
+.memo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.memo-card {
+  padding: 12px 14px;
+  border: 1px solid #dfe2dd;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.memo-card time {
+  font-size: 11px;
+  color: #8a9086;
+}
+
+.memo-card h3 {
+  margin: 2px 0 4px;
+  font-size: 14px;
+}
+
+.memo-card p {
+  margin: 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.tag-row span {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #eef0ec;
+  font-size: 11px;
+  color: #5a6157;
+}
+
+/* AI 技能 */
+
+.skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skill-card {
+  padding: 10px 14px;
+  border: 1px solid #dfe2dd;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.skill-card > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.skill-card strong {
+  font-size: 13px;
+}
+
+.skill-card span {
+  font-size: 11px;
+  color: #8a9086;
+  flex-shrink: 0;
+}
+
+.skill-card p {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: #5a6157;
+}
+
+.empty-text {
+  margin: 0;
+  padding: 10px;
+  color: #8a9086;
+  font-size: 13px;
+}
