@@ -4,6 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod claude;
+
 // 每个练习项目目录下有一份 tracekata.json，App 扫描发现，互不掺合。
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1083,7 +1085,13 @@ pub fn run() {
             save_memo,
             set_project_meta,
             reveal_project,
-            open_workspace_in_vscode
+            open_workspace_in_vscode,
+            claude::detect_claude_cli,
+            claude::detect_codex_cli,
+            claude::list_models,
+            claude::send_chat_message,
+            claude::list_chat_sessions,
+            claude::load_chat_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

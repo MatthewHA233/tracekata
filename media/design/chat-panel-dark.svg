@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="460" height="860" viewBox="0 0 460 860" font-family="-apple-system, 'PingFang SC', 'Segoe UI', sans-serif">
+  <rect width="460" height="860" fill="#0f1011"/>
+
+  <!-- 面板本体（深灰，与主界面暖白形成左亮右暗对比） -->
+  <rect x="16" y="16" width="428" height="828" rx="12" fill="#1a1b1d" stroke="#2a2c2f"/>
+
+  <!-- ① 顶栏 -->
+  <path d="M16 28 a12 12 0 0 1 12 -12 h404 a12 12 0 0 1 12 12 v34 h-428 z" fill="#1f2123"/>
+  <line x1="16" y1="62" x2="444" y2="62" stroke="#2a2c2f"/>
+  <text x="36" y="45" font-size="13.5" font-weight="600" fill="#e6e6e6">命令注册表 mini clone</text>
+  <path d="M240 38 l5 5 l5 -5" fill="none" stroke="#7a7d82" stroke-width="1.4"/>
+  <rect x="372" y="26" width="28" height="28" rx="7" fill="none" stroke="#34373b"/>
+  <line x1="386" y1="33" x2="386" y2="47" stroke="#a8abb0" stroke-width="1.5"/>
+  <line x1="379" y1="40" x2="393" y2="40" stroke="#a8abb0" stroke-width="1.5"/>
+  <rect x="406" y="26" width="28" height="28" rx="7" fill="none" stroke="#34373b"/>
+  <path d="M414 34 l12 12 M426 34 l-12 12" stroke="#a8abb0" stroke-width="1.5"/>
+
+  <!-- ② 文档式消息流 -->
+  <!-- 用户消息：带标记的深色整条，非气泡 -->
+  <rect x="16" y="78" width="428" height="44" fill="#202224"/>
+  <circle cx="40" cy="100" r="9" fill="#3a3d42"/>
+  <text x="40" y="104" font-size="10" fill="#cfd2d6" text-anchor="middle">你</text>
+  <text x="60" y="105" font-size="13.5" fill="#d7d9dc">help 和 login 这两题有什么区别？</text>
+
+  <!-- AI 回复：文档式铺开，无气泡 -->
+  <text x="36" y="152" font-size="11.5" fill="#6b6e73">▸ 思考了 3 秒</text>
+  <rect x="36" y="166" width="190" height="26" rx="6" fill="#222426" stroke="#2e3034"/>
+  <circle cx="52" cy="179" r="3" fill="#7da87f"/>
+  <text x="64" y="183" font-size="11.5" fill="#9aa0a6" font-family="ui-monospace,Menlo,monospace">Grep</text>
+  <text x="104" y="183" font-size="11" fill="#6b6e73">commands.ts</text>
+  <text x="208" y="183" font-size="11" fill="#7da87f">✓</text>
+  <text x="36" y="218" font-size="13.5" fill="#d7d9dc">两题都是命令对象，区别在 action：</text>
+  <text x="36" y="242" font-size="13.5" fill="#b9bdc2">help 的 action 打印帮助文本，login</text>
+  <text x="36" y="264" font-size="13.5" fill="#b9bdc2">的 action 触发登录流程。</text>
+  <!-- 代码块独立高亮 -->
+  <rect x="36" y="280" width="372" height="92" rx="8" fill="#0e0f10" stroke="#2a2c2f"/>
+  <text x="50" y="304" font-size="12" font-family="ui-monospace,Menlo,monospace"><tspan fill="#c792ea">const</tspan><tspan fill="#82aaff"> cmd</tspan><tspan fill="#89ddff"> =</tspan><tspan fill="#d7d9dc"> commands.find(</tspan></text>
+  <text x="50" y="326" font-size="12" font-family="ui-monospace,Menlo,monospace"><tspan fill="#d7d9dc">  c </tspan><tspan fill="#89ddff">=&gt;</tspan><tspan fill="#d7d9dc"> c.name </tspan><tspan fill="#89ddff">===</tspan><tspan fill="#c3e88d"> 'login'</tspan></text>
+  <text x="50" y="348" font-size="12" font-family="ui-monospace,Menlo,monospace" fill="#d7d9dc">)</text>
+  <rect x="372" y="290" width="24" height="20" rx="5" fill="#1f2123" stroke="#34373b"/>
+  <rect x="378" y="295" width="8" height="9" rx="1.5" fill="none" stroke="#9aa0a6"/>
+
+  <!-- 第二轮 -->
+  <rect x="16" y="392" width="428" height="40" fill="#202224"/>
+  <circle cx="40" cy="412" r="9" fill="#3a3d42"/>
+  <text x="40" y="416" font-size="10" fill="#cfd2d6" text-anchor="middle">你</text>
+  <text x="60" y="417" font-size="13.5" fill="#d7d9dc">给我出一道变体题</text>
+  <text x="36" y="462" font-size="13.5" fill="#b9bdc2">好，015 我先写示范，你照着誊抄：</text>
+  <text x="36" y="484" font-size="13.5" fill="#b9bdc2">把过滤条件换成 <tspan font-family="ui-monospace,Menlo,monospace" fill="#c3e88d">hidden</tspan></text>
+  <rect x="232" y="474" width="7" height="14" fill="#5a5d62"/>
+
+  <!-- ③ 输入区 -->
+  <rect x="32" y="744" width="396" height="70" rx="12" fill="#202224" stroke="#34373b"/>
+  <text x="50" y="772" font-size="13" fill="#6b6e73">问点什么，Enter 发送</text>
+  <text x="50" y="800" font-size="11" fill="#8b8f95">claude-opus-4.8  ⌄</text>
+  <circle cx="408" cy="792" r="14" fill="#3a6a46"/>
+  <path d="M408 786 l0 12 M403 791 l5 -5 l5 5" stroke="#fff" stroke-width="1.5" fill="none"/>
+
+  <!-- ④ 状态条 -->
+  <text x="36" y="836" font-size="11" fill="#5a5d62">Claude Code 2.1 · 代理 7890 · 多轮已接续</text>
+
+  <g font-size="11" fill="#7da87f" font-weight="700">
+    <text x="290" y="45">① 顶栏</text>
+    <text x="300" y="152">② 文档式消息流</text>
+    <text x="360" y="772">③ 输入</text>
+  </g>
+</svg>
