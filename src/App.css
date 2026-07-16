@@ -601,38 +601,348 @@ button:disabled {
   min-height: 60px;
 }
 
-/* 锚点记录 */
+/* 锚点记录 — 语境锚定 + 锚点域地图 */
 
-.memo-form {
+.anchor-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sessions-toggle {
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--moss);
+}
+
+.sessions-toggle:hover {
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.anchor-settings {
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-.memo-form input,
-.memo-form textarea {
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px solid #dfe2dd;
-  border-radius: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
   background: #fff;
-  font-size: 13px;
-  resize: vertical;
 }
 
-.memo-form-foot {
+.anchor-settings label {
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--moss);
 }
 
-.memo-form-foot input {
+.anchor-settings input,
+.anchor-settings select {
+  padding: 6px 9px;
+  border: 1px solid #cfd3cc;
+  border-radius: 7px;
+  background: #fff;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.anchor-settings-row {
+  display: flex;
+  gap: 10px;
+}
+
+.anchor-settings-row label {
   flex: 1;
 }
 
-.memo-list {
+/* 语境卡 */
+.ctx-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ctx-files {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ctx-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--sage);
+}
+
+.ctx-files .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+
+.ctx-files .chip:hover {
+  border-color: #b9c1b4;
+}
+
+.ctx-files .chip.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.chip-kind {
+  font-size: 10.5px;
+  font-family: Inter, sans-serif;
+  color: var(--sage);
+}
+
+.ctx-pre {
+  margin: 0;
+  padding: 12px 14px;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  cursor: text;
+}
+
+.ctx-selection {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.ctx-selection button {
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--sage);
+  text-decoration: underline;
+}
+
+/* 想法输入 */
+.anchor-speech {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.anchor-speech textarea {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid #cfd3cc;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 13.5px;
+  resize: vertical;
+}
+
+/* 提取结果确认卡 */
+.anchor-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 2px 12px rgba(191, 79, 38, 0.08);
+}
+
+.pending-segment,
+.binding-card blockquote {
+  margin: 0;
+  padding: 4px 0 4px 10px;
+  border-left: 3px solid var(--line);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--moss);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pending-thought {
+  margin: 0;
+  font-size: 13.5px;
+}
+
+.pending-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 锚点句 chips（三类三色） */
+.anchor-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.anchor-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 12px;
+}
+
+.anchor-chip i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sage);
+}
+
+.anchor-chip.motive i {
+  background: var(--accent);
+}
+
+.anchor-chip.view i {
+  background: #4a6fa5;
+}
+
+.anchor-chip.practice i {
+  background: var(--done);
+}
+
+.anchor-cat-label {
+  font-size: 11px;
+  color: var(--sage);
+}
+
+/* 绑定时间流 */
+.binding-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.binding-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.binding-card p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.binding-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--sage);
+}
+
+.old-memos summary {
+  font-size: 12.5px;
+  color: var(--sage);
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.old-memos .memo-card {
+  margin-top: 8px;
+}
+
+/* 锚点域地图 */
+.map-status {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--moss);
+}
+
+.map-warn {
+  color: var(--accent);
+}
+
+.anchor-map-wrap {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.anchor-map {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.cluster-bubble {
+  fill: rgba(31, 36, 32, 0.035);
+  stroke: var(--line);
+  stroke-dasharray: 3 4;
+}
+
+.cluster-name {
+  fill: var(--moss);
+  font-size: 13px;
+  font-weight: 600;
+  text-anchor: middle;
+}
+
+.anchor-ball {
+  fill: var(--sage);
+  stroke: #fff;
+  stroke-width: 1.5;
+  cursor: pointer;
+}
+
+.anchor-ball.motive {
+  fill: var(--accent);
+}
+
+.anchor-ball.view {
+  fill: #4a6fa5;
+}
+
+.anchor-ball.practice {
+  fill: var(--done);
+}
+
+.anchor-ball.focused {
+  stroke: var(--ink);
+}
+
+.anchor-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
 }
 
 .memo-card {
@@ -792,6 +1102,10 @@ button:disabled {
   color: var(--ink);
 }
 
+.effort-select {
+  max-width: 110px;
+}
+
 /* 会话列表（面板主视图，VSCode Copilot Chat 式） */
 .session-list {
   flex: 1;
@@ -863,7 +1177,8 @@ button:disabled {
   flex: 1;
   overflow-y: auto;
   display: flex;
-  flex-direction: column;
+  /* 从新往旧渲染：首个子元素在底部，视口原生钉底 */
+  flex-direction: column-reverse;
   gap: 12px;
   padding: 4px 0 12px;
 }
@@ -873,6 +1188,9 @@ button:disabled {
   flex-direction: column;
   gap: 6px;
   max-width: 88%;
+  /* 离屏消息跳过布局与绘制（长会话滚动性能） */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 90px;
 }
 
 .chat-bubble.user {
@@ -1004,6 +1322,7 @@ button:disabled {
   border-radius: 8px;
   background: #f7f6f3;
   padding: 4px 10px;
+  margin: 6px 0;
 }
 
 .bubble-thinking summary {
@@ -1020,28 +1339,175 @@ button:disabled {
   word-break: break-word;
 }
 
-.bubble-tool {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
-  border-radius: 8px;
-  background: #eef0ec;
-  font-size: 12px;
+/* Claude Code 终端式工具行：⏺ 名称(参数) + ⎿ 结果 */
+.tool-line {
+  margin: 8px 0;
+  font-size: 12.5px;
 }
 
-.bubble-tool .tool-name {
+.tool-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.tool-dot {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.tool-dot.running {
+  color: var(--sage);
+  animation: tool-pulse 1.2s ease-in-out infinite;
+}
+
+.tool-dot.done {
+  color: var(--done);
+}
+
+@keyframes tool-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.tool-fn {
+  flex-shrink: 0;
+  font-weight: 700;
+  font-size: 12.5px;
+}
+
+.tool-args {
   font-family: var(--mono);
   font-size: 11.5px;
   color: var(--moss);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
-.bubble-tool .tool-running {
-  color: #8a9086;
+.tool-result {
+  display: flex;
+  gap: 7px;
+  margin: 1px 0 0 3px;
+  color: var(--sage);
+  min-width: 0;
 }
 
-.bubble-tool .tool-done {
-  color: var(--done);
+.tool-result.expandable {
+  cursor: pointer;
+}
+
+.tool-result.expandable:hover {
+  color: var(--moss);
+}
+
+.tool-elbow {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.tool-result-line {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.tool-result-line i {
+  font-style: normal;
+  font-family: Inter, sans-serif;
+  font-size: 10.5px;
+  color: #b0b5ab;
+}
+
+.tool-result pre {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--moss);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+/* 代码改动 diff（红删绿增） */
+.diff-add-count {
+  color: #2e5638;
+  font-weight: 700;
+}
+
+.diff-del-count {
+  color: #8c3a2a;
+  font-weight: 700;
+}
+
+.tool-diff-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.diff-view {
+  min-width: 0;
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.65;
+}
+
+.diff-row {
+  display: flex;
+  gap: 8px;
+  padding: 0 10px 0 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-row.add {
+  background: #e4efe2;
+  color: #24422c;
+}
+
+.diff-row.del {
+  background: #f6e2dd;
+  color: #6e2f22;
+}
+
+.diff-row.meta {
+  padding-top: 3px;
+  color: var(--sage);
+  font-weight: 600;
+}
+
+.diff-sign {
+  flex-shrink: 0;
+  width: 10px;
+  text-align: center;
+  opacity: 0.7;
+  user-select: none;
+}
+
+.diff-text {
+  flex: 1;
+  min-width: 0;
 }
 
 .typing {
@@ -1086,9 +1552,12 @@ button:disabled {
 .chat-input-foot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   padding: 2px 6px 6px 8px;
+}
+
+.chat-input-foot .send-btn {
+  margin-left: auto;
 }
 
 .send-btn {

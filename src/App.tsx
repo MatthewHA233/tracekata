@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import AnchorView from "./AnchorView";
+import { diffLines, patchToRows } from "./lib/line-diff";
 import "./App.css";
 
 type TrackListItem = {
@@ -107,6 +109,8 @@ type ChatEngine = "claude" | "codex";
 type ModelOption = {
   id: string;
   label: string;
+  /** 该模型支持的思考深度档位（codex 动态返回） */
+  efforts?: string[];
 };
 
 type ChatStreamEvent = {
@@ -114,17 +118,27 @@ type ChatStreamEvent = {
   delta?: string;
   toolName?: string;
   toolInput?: string;
+  toolDiff?: ToolDiff;
   sessionId?: string;
   error?: string;
 };
 
-type ChatTool = { name: string; result?: string };
+type ToolDiff = {
+  filePath?: string;
+  oldText?: string;
+  newText?: string;
+  patch?: string;
+};
+
+// 消息 = 按时间顺序的块序列，文本/思考/工具穿插（终端式会话流）
+type ChatBlock =
+  | { kind: "text"; text: string }
+  | { kind: "thinking"; text: string }
+  | { kind: "tool"; name: string; input?: string; result?: string; diff?: ToolDiff };
 
 type ChatMessage = {
   role: "user" | "assistant";
-  content: string;
-  thinking: string;
-  tools: ChatTool[];
+  blocks: ChatBlock[];
 };
 
 type ChatSessionInfo = {
@@ -149,9 +163,10 @@ const groupNames: Record<string, string> = {
 
 const TRACKS_SHOWN = 5;
 
-// 引擎/模型选择常驻（localStorage，按引擎分别记忆）
+// 引擎/模型/思考深度选择常驻（localStorage，按引擎分别记忆）
 const ENGINE_KEY = "tracekata.chatEngine";
 const modelKey = (engine: ChatEngine) => `tracekata.chatModel.${engine}`;
+const effortKey = (engine: ChatEngine) => `tracekata.chatEffort.${engine}`;
 
 function savedEngine(): ChatEngine {
   return localStorage.getItem(ENGINE_KEY) === "codex" ? "codex" : "claude";
@@ -160,6 +175,14 @@ function savedEngine(): ChatEngine {
 function savedModel(engine: ChatEngine): string {
   return localStorage.getItem(modelKey(engine)) || "default";
 }
+
+function savedEffort(engine: ChatEngine): string {
+  return localStorage.getItem(effortKey(engine)) || "default";
+}
+
+// Claude Code 的档位固定（--effort），Codex 优先用模型自报的 supported_reasoning_levels
+const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const CODEX_EFFORTS_FALLBACK = ["low", "medium", "high", "xhigh"];
 
 function formatSessionTime(ts: number) {
   const d = new Date(ts);
@@ -340,9 +363,6 @@ function App() {
   const [error, setError] = useState("");
   const [runResult, setRunResult] = useState<RunResult | null>(null);
   const [busy, setBusy] = useState(false);
-  const [memoTitle, setMemoTitle] = useState("");
-  const [memoBody, setMemoBody] = useState("");
-  const [memoTags, setMemoTags] = useState("");
   const [cliDetection, setCliDetection] = useState<CliDetection | null>(null);
   const [detecting, setDetecting] = useState(false);
 
@@ -355,8 +375,11 @@ function App() {
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
   const [chatEngine, setChatEngine] = useState<ChatEngine>(savedEngine);
   const [chatModel, setChatModel] = useState(() => savedModel(savedEngine()));
+  const [chatEffort, setChatEffort] = useState(() => savedEffort(savedEngine()));
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [chatOpen, setChatOpen] = useState(true);
+  // 长会话只渲染最近 N 条，顶部按钮加载更早（避免几百条消息拖垮渲染）
+  const [visibleCount, setVisibleCount] = useState(60);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
   async function detectCli(engine: ChatEngine = chatEngine) {
@@ -388,8 +411,9 @@ function App() {
   function applyEngine(engine: ChatEngine) {
     setChatEngine(engine);
     localStorage.setItem(ENGINE_KEY, engine);
-    // 恢复这个引擎上次选的型号
+    // 恢复这个引擎上次选的型号和思考深度
     setChatModel(savedModel(engine));
+    setChatEffort(savedEffort(engine));
     detectCli(engine);
     loadModels(engine);
   }
@@ -419,6 +443,7 @@ function App() {
     setChatResumeId(null);
     setChatInput("");
     setSessionTitle(null);
+    setVisibleCount(60);
     setPanelView("conversation");
   }
 
@@ -433,6 +458,7 @@ function App() {
     setChatResumeId(session.sessionId);
     setSessionTitle(session.title);
     setChatInput("");
+    setVisibleCount(60);
     setPanelView("conversation");
     try {
       const history = await invoke<ChatMessage[]>("load_chat_history", {
@@ -454,44 +480,91 @@ function App() {
     loadChatSessions();
   }, [chatOpen, state?.workspaceRoot]);
 
-  // 监听后端流式事件，累积到最后一条 assistant 消息
+  // 流式事件批处理：增量先进队列，每 80ms 合并成一次 setState
+  // （逐 token 触发 React 渲染 + 强制 reflow 是长会话卡顿的主因）
+  const pendingEvents = useRef<ChatStreamEvent[]>([]);
+  const flushTimer = useRef<number | null>(null);
+
+  function applyEventToBlocks(blocks: ChatBlock[], e: ChatStreamEvent) {
+    const tail = blocks[blocks.length - 1];
+    if (e.kind === "text" && e.delta) {
+      // 相邻文本增量并入同一块；被工具/思考隔开就另起一块 → 自然穿插
+      if (tail?.kind === "text") {
+        blocks[blocks.length - 1] = { ...tail, text: tail.text + e.delta };
+      } else {
+        blocks.push({ kind: "text", text: e.delta });
+      }
+    } else if (e.kind === "thinking" && e.delta) {
+      if (tail?.kind === "thinking") {
+        blocks[blocks.length - 1] = { ...tail, text: tail.text + e.delta };
+      } else {
+        blocks.push({ kind: "thinking", text: e.delta });
+      }
+    } else if (e.kind === "tool_use" && e.toolName) {
+      blocks.push({
+        kind: "tool",
+        name: e.toolName,
+        input: e.toolInput,
+        diff: e.toolDiff,
+      });
+    } else if (e.kind === "tool_input" && e.toolName) {
+      // 完整 assistant 记录到达后补参数摘要/diff（流式开始时只有名字）
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i];
+        if (b.kind === "tool" && b.name === e.toolName && !b.input && !b.diff) {
+          blocks[i] = { ...b, input: e.toolInput, diff: e.toolDiff };
+          break;
+        }
+      }
+    } else if (e.kind === "tool_result") {
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i];
+        if (b.kind === "tool" && !b.result) {
+          blocks[i] = { ...b, result: e.toolInput || "完成" };
+          break;
+        }
+      }
+    } else if (e.kind === "error" && e.error) {
+      blocks.push({ kind: "text", text: `⚠️ ${e.error}` });
+    }
+  }
+
+  function flushStreamEvents() {
+    flushTimer.current = null;
+    const events = pendingEvents.current;
+    if (events.length === 0) return;
+    pendingEvents.current = [];
+    setChatMessages((prev) => {
+      if (prev.length === 0) return prev;
+      const next = [...prev];
+      const last = { ...next[next.length - 1] };
+      if (last.role !== "assistant") return prev;
+      const blocks = [...last.blocks];
+      for (const e of events) applyEventToBlocks(blocks, e);
+      last.blocks = blocks;
+      next[next.length - 1] = last;
+      return next;
+    });
+  }
+
   useEffect(() => {
     const unlisten = listen<ChatStreamEvent>("chat-stream", (event) => {
       const e = event.payload;
-      setChatMessages((prev) => {
-        if (prev.length === 0) return prev;
-        const next = [...prev];
-        const last = { ...next[next.length - 1] };
-        if (last.role !== "assistant") return prev;
-
-        if (e.kind === "text" && e.delta) {
-          last.content += e.delta;
-        } else if (e.kind === "thinking" && e.delta) {
-          last.thinking += e.delta;
-        } else if (e.kind === "tool_use" && e.toolName) {
-          last.tools = [...last.tools, { name: e.toolName }];
-        } else if (e.kind === "tool_result") {
-          const tools = [...last.tools];
-          for (let i = tools.length - 1; i >= 0; i--) {
-            if (!tools[i].result) {
-              tools[i] = { ...tools[i], result: e.toolInput || "完成" };
-              break;
-            }
-          }
-          last.tools = tools;
-        } else if (e.kind === "error" && e.error) {
-          last.content += `\n\n⚠️ ${e.error}`;
-        }
-        next[next.length - 1] = last;
-        return next;
-      });
 
       if (e.kind === "status" && e.sessionId) {
         setChatResumeId(e.sessionId);
+        return;
       }
       if (e.kind === "done") {
+        flushStreamEvents();
         if (e.sessionId) setChatResumeId(e.sessionId);
         setChatStreaming(false);
+        return;
+      }
+
+      pendingEvents.current.push(e);
+      if (flushTimer.current === null) {
+        flushTimer.current = window.setTimeout(flushStreamEvents, 80);
       }
     });
     return () => {
@@ -499,10 +572,24 @@ function App() {
     };
   }, []);
 
-  // 新消息时滚到底
-  useEffect(() => {
-    chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight });
-  }, [chatMessages]);
+  // 滚动交给 column-reverse 原生钉底，不再需要手动 scrollTo
+
+  async function stopChat() {
+    try {
+      await invoke("stop_chat");
+    } catch {
+      // 进程可能已自然结束
+    }
+    setChatMessages((prev) => {
+      if (prev.length === 0) return prev;
+      const next = [...prev];
+      const last = { ...next[next.length - 1] };
+      if (last.role !== "assistant") return prev;
+      last.blocks = [...last.blocks, { kind: "text", text: "*⏹ 已打断*" }];
+      next[next.length - 1] = last;
+      return next;
+    });
+  }
 
   async function sendChat() {
     const text = chatInput.trim();
@@ -513,8 +600,8 @@ function App() {
     setSessionTitle((prev) => prev ?? [...text].slice(0, 40).join(""));
     setChatMessages((prev) => [
       ...prev,
-      { role: "user", content: text, thinking: "", tools: [] },
-      { role: "assistant", content: "", thinking: "", tools: [] },
+      { role: "user", blocks: [{ kind: "text", text }] },
+      { role: "assistant", blocks: [] },
     ]);
     try {
       await invoke("send_chat_message", {
@@ -523,13 +610,14 @@ function App() {
         cwd: state?.workspaceRoot ?? null,
         engine: chatEngine,
         model: chatModel,
+        effort: chatEffort,
       });
       loadChatSessions();
     } catch (caught) {
       setChatMessages((prev) => {
         const next = [...prev];
         const last = { ...next[next.length - 1] };
-        last.content += `\n\n⚠️ ${String(caught)}`;
+        last.blocks = [...last.blocks, { kind: "text", text: `⚠️ ${String(caught)}` }];
         next[next.length - 1] = last;
         return next;
       });
@@ -660,36 +748,6 @@ function App() {
     }
   }
 
-  async function saveMemo() {
-    const tags = memoTags
-      .split(/[,\s，、]+/)
-      .map((tag) => tag.trim())
-      .filter(Boolean);
-    const time = new Date().toLocaleString("zh-CN", { hour12: false });
-
-    setBusy(true);
-    setError("");
-    setMessage("");
-    try {
-      const result = await invoke<CommandResult>("save_memo", {
-        projectId,
-        title: memoTitle,
-        body: memoBody,
-        tags,
-        time,
-      });
-      setMessage(result.message);
-      setMemoTitle("");
-      setMemoBody("");
-      setMemoTags("");
-      await loadState();
-    } catch (caught) {
-      setError(String(caught));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   if (!state && !error) {
     return (
       <main className="loading-screen">
@@ -702,9 +760,6 @@ function App() {
   const runText = current
     ? ["node", current.runFile, ...current.runArgs].join(" ")
     : "";
-  const currentProject = state?.projects.find(
-    (project) => project.id === state.currentProjectId,
-  );
 
   return (
     <main className="layout">
@@ -1089,68 +1144,13 @@ function App() {
         )}
 
         {view === "memo" && (
-          <>
-            <header className="detail-head">
-              <h2>锚点记录</h2>
-              <p className="base-hint">
-                {currentProject
-                  ? `记录在 ${currentProject.displayName} 项目里。只记你自己真的想明白的那句话。`
-                  : "只记你自己真的想明白的那句话。"}
-              </p>
-            </header>
-
-            <div className="memo-form">
-              <input
-                value={memoTitle}
-                onChange={(event) => setMemoTitle(event.currentTarget.value)}
-                placeholder="标题，比如：函数参数不是变量名绑定"
-              />
-              <textarea
-                value={memoBody}
-                onChange={(event) => setMemoBody(event.currentTarget.value)}
-                placeholder="写你刚刚真正想明白的那句话"
-                rows={3}
-              />
-              <div className="memo-form-foot">
-                <input
-                  value={memoTags}
-                  onChange={(event) => setMemoTags(event.currentTarget.value)}
-                  placeholder="标签，比如：函数 参数"
-                />
-                <button
-                  type="button"
-                  className="main-button strong"
-                  disabled={busy}
-                  onClick={saveMemo}
-                >
-                  保存
-                </button>
-              </div>
-            </div>
-
-            <div className="memo-list">
-              {state?.memos.length ? (
-                state.memos.map((memo) => (
-                  <article className="memo-card" key={`${memo.time}-${memo.title}`}>
-                    <time>{memo.time || "未记录时间"}</time>
-                    <h3>{memo.title}</h3>
-                    <p>{memo.body}</p>
-                    {memo.tags.length > 0 && (
-                      <div className="tag-row">
-                        {memo.tags.map((tag) => (
-                          <span key={tag}>{tag}</span>
-                        ))}
-                      </div>
-                    )}
-                  </article>
-                ))
-              ) : (
-                <p className="empty-text">
-                  还没有记录。卡住、想通、修对了，才适合写这里。
-                </p>
-              )}
-            </div>
-          </>
+          <AnchorView
+            projectId={state?.currentProjectId ?? null}
+            exerciseId={state?.currentExercise?.id ?? ""}
+            exerciseTitle={state?.currentExercise?.title ?? ""}
+            fileGroups={state?.fileGroups ?? []}
+            memos={state?.memos ?? []}
+          />
         )}
 
         {view === "skills" && (
@@ -1293,19 +1293,32 @@ function App() {
                     </div>
                   </div>
                 )}
+                {/* column-reverse：DOM 从最新往旧建，视口原生钉底 */}
                 <div className="chat-scroll" ref={chatScrollRef}>
                   {chatMessages.length === 0 && (
                     <p className="empty-text">
                       和 AI 聊聊当前练习。它能联网搜索、读工作区文件。
                     </p>
                   )}
-                  {chatMessages.map((msg, i) => (
-                    <ChatBubble
-                      key={i}
-                      msg={msg}
-                      streaming={chatStreaming && i === chatMessages.length - 1}
-                    />
-                  ))}
+                  {[...chatMessages.slice(-visibleCount)].reverse().map((msg, ri) => {
+                    const abs = chatMessages.length - 1 - ri;
+                    return (
+                      <ChatBubble
+                        key={abs}
+                        msg={msg}
+                        streaming={chatStreaming && abs === chatMessages.length - 1}
+                      />
+                    );
+                  })}
+                  {chatMessages.length > visibleCount && (
+                    <button
+                      type="button"
+                      className="load-earlier"
+                      onClick={() => setVisibleCount((v) => v + 100)}
+                    >
+                      显示更早的 {chatMessages.length - visibleCount} 条消息
+                    </button>
+                  )}
                 </div>
 
                 <div className="chat-input-card">
@@ -1350,26 +1363,54 @@ function App() {
                           <option value={chatModel}>{chatModel}</option>
                         )}
                     </select>
+                    <select
+                      className="model-select effort-select"
+                      title="思考深度"
+                      value={chatEffort}
+                      disabled={chatStreaming}
+                      onChange={(e) => {
+                        const value = e.currentTarget.value;
+                        setChatEffort(value);
+                        localStorage.setItem(effortKey(chatEngine), value);
+                      }}
+                    >
+                      <option value="default">深度·默认</option>
+                      {(chatEngine === "claude"
+                        ? CLAUDE_EFFORTS
+                        : modelOptions.find((m) => m.id === chatModel)?.efforts ??
+                          CODEX_EFFORTS_FALLBACK
+                      ).map((level) => (
+                        <option key={level} value={level}>
+                          {level}
+                        </option>
+                      ))}
+                    </select>
                     <button
                       type="button"
                       className="send-btn"
-                      title="发送"
-                      disabled={chatStreaming || !chatInput.trim()}
-                      onClick={sendChat}
+                      title={chatStreaming ? "停止" : "发送"}
+                      disabled={!chatStreaming && !chatInput.trim()}
+                      onClick={chatStreaming ? stopChat : sendChat}
                     >
-                      <svg
-                        width={14}
-                        height={14}
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth={1.8}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <line x1="8" y1="13" x2="8" y2="3" />
-                        <polyline points="4,7 8,3 12,7" />
-                      </svg>
+                      {chatStreaming ? (
+                        <svg width={14} height={14} viewBox="0 0 16 16" fill="currentColor">
+                          <rect x="4.5" y="4.5" width="7" height="7" rx="1.2" />
+                        </svg>
+                      ) : (
+                        <svg
+                          width={14}
+                          height={14}
+                          viewBox="0 0 16 16"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth={1.8}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <line x1="8" y1="13" x2="8" y2="3" />
+                          <polyline points="4,7 8,3 12,7" />
+                        </svg>
+                      )}
                     </button>
                   </div>
                 </div>
@@ -1381,43 +1422,145 @@ function App() {
   );
 }
 
-function ChatBubble({ msg, streaming }: { msg: ChatMessage; streaming: boolean }) {
+/// 文本块的 Markdown 渲染单独 memo：流式时只有正在增长的块重新解析
+const MarkdownText = memo(function MarkdownText({ text }: { text: string }) {
+  return <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>;
+});
+
+/// 消息级 memo：流式/加长会话时，未变化的消息整条跳过重渲染
+const ChatBubble = memo(function ChatBubble({
+  msg,
+  streaming,
+}: {
+  msg: ChatMessage;
+  streaming: boolean;
+}) {
   if (msg.role === "user") {
     return (
       <div className="chat-bubble user">
-        <div className="bubble-body">{msg.content}</div>
+        <div className="bubble-body">
+          {msg.blocks
+            .map((b) => (b.kind === "text" ? b.text : ""))
+            .join("")}
+        </div>
+      </div>
+    );
+  }
+
+  // 文本 / 思考 / 工具按到达顺序穿插渲染（终端式会话流）
+  return (
+    <div className="chat-bubble assistant">
+      <div className="bubble-body md">
+        {msg.blocks.map((block, i) => {
+          if (block.kind === "thinking") {
+            // 上游可能只存了空思考（内容不落盘），不渲染空块
+            if (!block.text.trim()) return null;
+            return (
+              <details className="bubble-thinking" key={i}>
+                <summary>思考过程</summary>
+                <pre>{block.text}</pre>
+              </details>
+            );
+          }
+          if (block.kind === "tool") {
+            return <ToolLine key={i} block={block} />;
+          }
+          return <MarkdownText key={i} text={block.text} />;
+        })}
+        {msg.blocks.length === 0 && streaming && <span className="typing">●●●</span>}
+      </div>
+    </div>
+  );
+});
+
+/// 工具显示名：与 Claude Code 一致，编辑显示为 Update
+const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  Edit: "Update",
+  NotebookEdit: "Update",
+};
+
+/// Claude Code 终端式工具行：⏺ 名称(参数) + ⎿ 结果摘要；
+/// 涉及代码改动的（Edit/Write/apply_patch）展开成红删绿增 diff
+const ToolLine = memo(function ToolLine({
+  block,
+}: {
+  block: Extract<ChatBlock, { kind: "tool" }>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const done = block.result !== undefined;
+  const displayName = TOOL_DISPLAY_NAMES[block.name] ?? block.name;
+  const argText = block.input ?? block.diff?.filePath;
+
+  const diffRows = useMemo(() => {
+    if (!block.diff) return null;
+    if (block.diff.patch) return patchToRows(block.diff.patch);
+    return diffLines(block.diff.oldText ?? "", block.diff.newText ?? "");
+  }, [block.diff]);
+
+  const resultText = block.result ?? "";
+  const firstLine = resultText.split("\n")[0] ?? "";
+  const expandable = resultText.includes("\n") || resultText.length > 80;
+
+  // 代码改动：diff 直接平铺展示，不折叠
+  if (diffRows) {
+    const adds = diffRows.filter((r) => r.type === "add").length;
+    const dels = diffRows.filter((r) => r.type === "del").length;
+    return (
+      <div className="tool-line">
+        <div className="tool-head">
+          <span className="tool-dot done">⏺</span>
+          <span className="tool-fn">{displayName}</span>
+          {argText && <span className="tool-args">({argText})</span>}
+        </div>
+        <div className="tool-result">
+          <span className="tool-elbow">⎿</span>
+          <div className="tool-diff-body">
+            <span className="tool-result-line">
+              <b className="diff-add-count">+{adds}</b>{" "}
+              <b className="diff-del-count">−{dels}</b>
+            </span>
+            <div className="diff-view">
+              {diffRows.map((row, i) => (
+                <div className={`diff-row ${row.type}`} key={i}>
+                  <span className="diff-sign">
+                    {row.type === "add" ? "+" : row.type === "del" ? "-" : " "}
+                  </span>
+                  <span className="diff-text">{row.text || " "}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="chat-bubble assistant">
-      {msg.thinking && (
-        <details className="bubble-thinking">
-          <summary>思考过程</summary>
-          <pre>{msg.thinking}</pre>
-        </details>
-      )}
-      {msg.tools.map((tool, i) => (
-        <div className="bubble-tool" key={i}>
-          <span className="tool-name">{tool.name}</span>
-          {tool.result ? (
-            <span className="tool-done">✓</span>
-          ) : (
-            <span className="tool-running">运行中…</span>
-          )}
-        </div>
-      ))}
-      <div className="bubble-body md">
-        {msg.content ? (
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+    <div className="tool-line">
+      <div className="tool-head">
+        <span className={`tool-dot${done ? " done" : " running"}`}>⏺</span>
+        <span className="tool-fn">{displayName}</span>
+        {argText && <span className="tool-args">({argText})</span>}
+      </div>
+      <div
+        className={`tool-result${expandable ? " expandable" : ""}`}
+        onClick={() => expandable && setExpanded((v) => !v)}
+      >
+        <span className="tool-elbow">⎿</span>
+        {expanded ? (
+          <pre>{resultText}</pre>
+        ) : !done ? (
+          <span className="tool-result-line dim">运行中…</span>
         ) : (
-          streaming && <span className="typing">●●●</span>
+          <span className="tool-result-line">
+            {firstLine || "完成"}
+            {expandable && <i>　…点击展开</i>}
+          </span>
         )}
       </div>
     </div>
   );
-}
+});
 
 function FileStatus({ file }: { file: FileItem }) {
   if (!file.exists) {

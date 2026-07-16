@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod anchor_field;
 mod claude;
 
 // 每个练习项目目录下有一份 tracekata.json，App 扫描发现，互不掺合。
@@ -416,6 +417,25 @@ fn save_memo(
     })
 }
 
+/// 读项目内某个文件的内容（锚点记录的语境展示用），路径限制在项目目录内
+#[tauri::command]
+fn read_project_file(project_id: String, relative_path: String) -> Result<String, String> {
+    let (_root, projects) = load_workspace()?;
+    let project = resolve_project(&projects, Some(&project_id))?;
+    let path = project.dir.join(&relative_path);
+    let canon = path
+        .canonicalize()
+        .map_err(|error| format!("读取失败：{error}"))?;
+    let base = project
+        .dir
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !canon.starts_with(&base) {
+        return Err("路径越界".to_string());
+    }
+    fs::read_to_string(&canon).map_err(|error| format!("读取失败：{error}"))
+}
+
 #[tauri::command]
 fn set_project_meta(
     project_id: String,
@@ -572,7 +592,7 @@ fn load_workspace() -> Result<(PathBuf, Vec<Project>), String> {
     Ok((root, projects))
 }
 
-fn find_workspace_root() -> Result<PathBuf, String> {
+pub(crate) fn find_workspace_root() -> Result<PathBuf, String> {
     if let Ok(value) = env::var("TRACEKATA_WORKSPACE_ROOT") {
         let candidate = PathBuf::from(value);
         if !scan_projects(&candidate).is_empty() {
@@ -1076,6 +1096,7 @@ fn exercise_summary(exercise: &Exercise) -> ExerciseSummary {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(claude::ChatRunState::default())
         .invoke_handler(tauri::generate_handler![
             load_dashboard_state,
             prepare_exercise,
@@ -1086,10 +1107,18 @@ pub fn run() {
             set_project_meta,
             reveal_project,
             open_workspace_in_vscode,
+            read_project_file,
+            anchor_field::load_anchor_field,
+            anchor_field::extract_anchor,
+            anchor_field::save_anchor_record,
+            anchor_field::embed_missing_anchors,
+            anchor_field::name_cluster,
+            anchor_field::save_cluster_name,
             claude::detect_claude_cli,
             claude::detect_codex_cli,
             claude::list_models,
             claude::send_chat_message,
+            claude::stop_chat,
             claude::list_chat_sessions,
             claude::load_chat_history
         ])

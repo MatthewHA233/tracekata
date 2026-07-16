@@ -8,7 +8,53 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// 默认代理（让 claude 子进程能联网；子进程不继承终端代理变量，必须显式注入）
-const DEFAULT_PROXY: &str = "http://127.0.0.1:7890";
+pub(crate) const DEFAULT_PROXY: &str = "http://127.0.0.1:7890";
+
+/// 当前对话子进程句柄：打断用（SIGTERM + 3 秒后 SIGKILL 兜底，参考 Open Design 的 cancel-grace）
+#[derive(Default)]
+pub struct ChatRun {
+    pid: Option<u32>,
+    stopped: bool,
+}
+
+#[derive(Default)]
+pub struct ChatRunState(pub std::sync::Mutex<ChatRun>);
+
+fn mark_running(state: &ChatRunState, pid: Option<u32>) {
+    let mut run = state.0.lock().unwrap();
+    run.pid = pid;
+    run.stopped = false;
+}
+
+/// 清除句柄并返回是否是用户主动打断（用于抑制误报错误）
+fn finish_running(state: &ChatRunState) -> bool {
+    let mut run = state.0.lock().unwrap();
+    run.pid = None;
+    run.stopped
+}
+
+/// 打断当前回合：SIGTERM 让 CLI 体面退出（部分回合已落盘、可 resume），3 秒后 SIGKILL 兜底
+#[tauri::command]
+pub fn stop_chat(state: tauri::State<'_, ChatRunState>) -> Result<(), String> {
+    let pid = {
+        let mut run = state.0.lock().unwrap();
+        run.stopped = true;
+        run.pid
+    };
+    let Some(pid) = pid else { return Ok(()) };
+    let _ = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(pid.to_string())
+            .status();
+    });
+    Ok(())
+}
 
 /// CLI 检测结果，返回给前端
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,7 +67,7 @@ pub struct CliDetection {
 }
 
 /// 找到 claude 可执行文件路径
-fn resolve_claude_bin() -> Option<PathBuf> {
+pub(crate) fn resolve_claude_bin() -> Option<PathBuf> {
     // 1. 环境变量覆盖
     if let Ok(custom) = std::env::var("CLAUDE_BIN") {
         let p = PathBuf::from(&custom);
@@ -62,7 +108,7 @@ fn resolve_claude_bin() -> Option<PathBuf> {
 }
 
 /// 找到 codex 可执行文件路径
-fn resolve_codex_bin() -> Option<PathBuf> {
+pub(crate) fn resolve_codex_bin() -> Option<PathBuf> {
     if let Ok(custom) = std::env::var("CODEX_BIN") {
         let p = PathBuf::from(&custom);
         if p.exists() {
@@ -171,18 +217,21 @@ pub async fn detect_codex_cli() -> CliDetection {
     .await
 }
 
-/// 模型选项（下拉菜单用）
+/// 模型选项（下拉菜单用）。efforts 为该模型支持的思考深度档位（codex 动态给出）
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelOption {
     pub id: String,
     pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub efforts: Option<Vec<String>>,
 }
 
 fn model(id: &str, label: &str) -> ModelOption {
     ModelOption {
         id: id.into(),
         label: label.into(),
+        efforts: None,
     }
 }
 
@@ -214,7 +263,19 @@ fn parse_codex_models(stdout: &[u8]) -> Option<Vec<ModelOption>> {
             .and_then(|v| v.as_str())
             .filter(|s| !s.trim().is_empty())
             .unwrap_or(id);
-        out.push(model(id, label));
+        let efforts = entry
+            .get("supported_reasoning_levels")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l.get("effort").and_then(|v| v.as_str()))
+                    .map(String::from)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|v| !v.is_empty());
+        let mut opt = model(id, label);
+        opt.efforts = efforts;
+        out.push(opt);
     }
     (out.len() > 1).then_some(out)
 }
@@ -411,22 +472,96 @@ pub struct ChatSessionInfo {
     pub engine: String,
 }
 
-/// 历史消息（结构与前端 ChatMessage 对齐）
+/// 历史消息（结构与前端 ChatMessage 对齐）：
+/// blocks 按时间顺序穿插 text / thinking / tool，还原终端式的会话流
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryMessage {
     pub role: String,
-    pub content: String,
-    pub thinking: String,
-    pub tools: Vec<HistoryTool>,
+    pub blocks: Vec<HistoryBlock>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HistoryTool {
-    pub name: String,
+pub struct HistoryBlock {
+    /// text | thinking | tool
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<ToolDiffPayload>,
+}
+
+impl HistoryBlock {
+    fn text(t: &str) -> Self {
+        Self {
+            kind: "text".into(),
+            text: Some(t.to_string()),
+            name: None,
+            input: None,
+            result: None,
+            diff: None,
+        }
+    }
+    fn thinking(t: &str) -> Self {
+        Self {
+            kind: "thinking".into(),
+            text: Some(t.to_string()),
+            name: None,
+            input: None,
+            result: None,
+            diff: None,
+        }
+    }
+    fn tool(name: &str, input: Option<String>, diff: Option<ToolDiffPayload>) -> Self {
+        Self {
+            kind: "tool".into(),
+            text: None,
+            name: Some(name.to_string()),
+            input: input.filter(|s| !s.is_empty() && s != "{}"),
+            result: None,
+            diff,
+        }
+    }
+}
+
+/// 追加文本到最后一个同类块，否则新开一块（合并相邻同类段落）
+fn push_merged(blocks: &mut Vec<HistoryBlock>, kind: &str, t: &str) {
+    if let Some(last) = blocks.last_mut() {
+        if last.kind == kind {
+            if let Some(existing) = last.text.as_mut() {
+                if !existing.is_empty() {
+                    existing.push_str("\n\n");
+                }
+                existing.push_str(t);
+                return;
+            }
+        }
+    }
+    blocks.push(if kind == "thinking" {
+        HistoryBlock::thinking(t)
+    } else {
+        HistoryBlock::text(t)
+    });
+}
+
+/// 给最后一条 assistant 消息里第一个没结果的工具块回填结果
+fn fill_tool_result(messages: &mut [HistoryMessage], summary: String) {
+    if let Some(last) = messages.last_mut().filter(|m| m.role == "assistant") {
+        if let Some(tool) = last
+            .blocks
+            .iter_mut()
+            .find(|b| b.kind == "tool" && b.result.is_none())
+        {
+            tool.result = Some(summary);
+        }
+    }
 }
 
 /// Claude Code 会话目录：~/.claude/projects/{编码后的 cwd}
@@ -654,15 +789,26 @@ fn load_codex_history(session_id: &str) -> Result<Vec<HistoryMessage>, String> {
         }
         let Some(p) = json.get("payload") else { continue };
 
+        // 非 user 消息一律进最后一条 assistant；不存在就新开一条
+        macro_rules! last_assistant {
+            () => {{
+                if messages.last().map(|m| m.role.as_str()) != Some("assistant") {
+                    messages.push(HistoryMessage {
+                        role: "assistant".into(),
+                        blocks: Vec::new(),
+                    });
+                }
+                messages.last_mut().unwrap()
+            }};
+        }
+
         match p.get("type").and_then(|v| v.as_str()) {
             Some("message") => match p.get("role").and_then(|v| v.as_str()) {
                 Some("user") => {
                     if let Some(text) = codex_user_text(p) {
                         messages.push(HistoryMessage {
                             role: "user".into(),
-                            content: text,
-                            thinking: String::new(),
-                            tools: Vec::new(),
+                            blocks: vec![HistoryBlock::text(&text)],
                         });
                     }
                 }
@@ -680,24 +826,12 @@ fn load_codex_history(session_id: &str) -> Result<Vec<HistoryMessage>, String> {
                     if text.is_empty() {
                         continue;
                     }
-                    if messages.last().map(|m| m.role.as_str()) == Some("assistant") {
-                        let last = messages.last_mut().unwrap();
-                        if !last.content.is_empty() {
-                            last.content.push_str("\n\n");
-                        }
-                        last.content.push_str(&text);
-                    } else {
-                        messages.push(HistoryMessage {
-                            role: "assistant".into(),
-                            content: text,
-                            thinking: String::new(),
-                            tools: Vec::new(),
-                        });
-                    }
+                    let last = last_assistant!();
+                    push_merged(&mut last.blocks, "text", &text);
                 }
                 _ => {}
             },
-            // 推理摘要 → 思考过程
+            // 推理摘要 → 思考块
             Some("reasoning") => {
                 let mut chunks = Vec::new();
                 for key in ["summary", "content"] {
@@ -714,63 +848,69 @@ fn load_codex_history(session_id: &str) -> Result<Vec<HistoryMessage>, String> {
                 if chunks.is_empty() {
                     continue;
                 }
-                if messages.last().map(|m| m.role.as_str()) != Some("assistant") {
-                    messages.push(HistoryMessage {
-                        role: "assistant".into(),
-                        content: String::new(),
-                        thinking: String::new(),
-                        tools: Vec::new(),
-                    });
-                }
-                let last = messages.last_mut().unwrap();
-                last.thinking.push_str(&chunks.join("\n"));
+                let last = last_assistant!();
+                push_merged(&mut last.blocks, "thinking", &chunks.join("\n"));
             }
-            // 工具调用：exec_command 显示命令，其余显示工具名
+            // 工具调用：exec_command 显示为 Bash(命令)，其余用原名+参数摘要
             Some("function_call") => {
-                let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
-                let label = p
+                let raw_name = p.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                let name = if raw_name == "exec_command" || raw_name == "shell" {
+                    "Bash"
+                } else {
+                    raw_name
+                };
+                let input = p
                     .get("arguments")
                     .and_then(|v| v.as_str())
                     .and_then(|args| serde_json::from_str::<serde_json::Value>(args).ok())
                     .and_then(|args| {
                         for key in ["cmd", "command", "path", "file_path", "query"] {
                             if let Some(v) = args.get(key).and_then(|v| v.as_str()) {
-                                return Some(format!(
-                                    "$ {}",
-                                    v.chars().take(48).collect::<String>()
-                                ));
+                                return Some(v.chars().take(120).collect::<String>());
                             }
                         }
                         None
-                    })
-                    .unwrap_or_else(|| name.to_string());
-                if messages.last().map(|m| m.role.as_str()) != Some("assistant") {
-                    messages.push(HistoryMessage {
-                        role: "assistant".into(),
-                        content: String::new(),
-                        thinking: String::new(),
-                        tools: Vec::new(),
                     });
+                let last = last_assistant!();
+                last.blocks.push(HistoryBlock::tool(name, input, None));
+            }
+            // apply_patch 等自定义工具：input 是补丁原文，还原成 diff
+            Some("custom_tool_call") => {
+                let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                let input = p.get("input").and_then(|v| v.as_str()).unwrap_or("");
+                let last = last_assistant!();
+                if name == "apply_patch" {
+                    let mut block = HistoryBlock::tool(
+                        "Update",
+                        patch_file_summary(input),
+                        Some(ToolDiffPayload {
+                            file_path: None,
+                            old_text: None,
+                            new_text: None,
+                            patch: Some(input.to_string()),
+                        }),
+                    );
+                    block.result = Some("完成".into());
+                    last.blocks.push(block);
+                } else {
+                    let mut block = HistoryBlock::tool(
+                        name,
+                        Some(input.chars().take(120).collect()),
+                        None,
+                    );
+                    block.result = Some("完成".into());
+                    last.blocks.push(block);
                 }
-                messages
-                    .last_mut()
-                    .unwrap()
-                    .tools
-                    .push(HistoryTool { name: label, result: None });
             }
             Some("function_call_output") => {
-                if let Some(last) = messages.last_mut().filter(|m| m.role == "assistant") {
-                    if let Some(tool) = last.tools.iter_mut().find(|t| t.result.is_none()) {
-                        let summary = p
-                            .get("output")
-                            .map(|o| match o.as_str() {
-                                Some(s) => s.chars().take(120).collect(),
-                                None => tool_input_summary(o),
-                            })
-                            .unwrap_or_else(|| "完成".into());
-                        tool.result = Some(summary);
-                    }
-                }
+                let summary = p
+                    .get("output")
+                    .map(|o| match o.as_str() {
+                        Some(s) => s.trim().chars().take(400).collect(),
+                        None => tool_result_summary(o),
+                    })
+                    .unwrap_or_else(|| "完成".into());
+                fill_tool_result(&mut messages, summary);
             }
             _ => {}
         }
@@ -866,32 +1006,22 @@ pub fn load_chat_history(
                 let Some(content) = json.pointer("/message/content") else {
                     continue;
                 };
-                // 工具结果回写：标记到最后一条 assistant 消息的未完成工具上
+                // 工具结果回写：标记到最后一条 assistant 消息的未完成工具块上
                 if let Some(arr) = content.as_array() {
                     for item in arr {
                         if item.get("type").and_then(|v| v.as_str()) == Some("tool_result") {
-                            if let Some(last) =
-                                messages.last_mut().filter(|m| m.role == "assistant")
-                            {
-                                if let Some(tool) =
-                                    last.tools.iter_mut().find(|t| t.result.is_none())
-                                {
-                                    let summary = item
-                                        .get("content")
-                                        .map(tool_input_summary)
-                                        .unwrap_or_else(|| "完成".into());
-                                    tool.result = Some(summary);
-                                }
-                            }
+                            let summary = item
+                                .get("content")
+                                .map(tool_input_summary)
+                                .unwrap_or_else(|| "完成".into());
+                            fill_tool_result(&mut messages, summary);
                         }
                     }
                 }
                 if let Some(text) = user_text_from_content(content) {
                     messages.push(HistoryMessage {
                         role: "user".into(),
-                        content: text,
-                        thinking: String::new(),
-                        tools: Vec::new(),
+                        blocks: vec![HistoryBlock::text(&text)],
                     });
                 }
             }
@@ -900,13 +1030,12 @@ pub fn load_chat_history(
                 else {
                     continue;
                 };
-                // 同一轮回复会拆成多条 assistant 记录，连续的合并成一条
+                // 同一轮回复会拆成多条 assistant 记录，连续的合并成一条；
+                // 块保持原始顺序，文本/思考/工具穿插还原
                 if messages.last().map(|m| m.role.as_str()) != Some("assistant") {
                     messages.push(HistoryMessage {
                         role: "assistant".into(),
-                        content: String::new(),
-                        thinking: String::new(),
-                        tools: Vec::new(),
+                        blocks: Vec::new(),
                     });
                 }
                 let last = messages.last_mut().unwrap();
@@ -914,24 +1043,27 @@ pub fn load_chat_history(
                     match block.get("type").and_then(|v| v.as_str()) {
                         Some("text") => {
                             if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
-                                if !last.content.is_empty() {
-                                    last.content.push_str("\n\n");
-                                }
-                                last.content.push_str(t);
+                                push_merged(&mut last.blocks, "text", t);
                             }
                         }
                         Some("thinking") => {
+                            // Claude Code 不把思考内容落盘（只存签名），空的不生成块
                             if let Some(t) = block.get("thinking").and_then(|v| v.as_str()) {
-                                last.thinking.push_str(t);
+                                if !t.trim().is_empty() {
+                                    push_merged(&mut last.blocks, "thinking", t);
+                                }
                             }
                         }
                         Some("tool_use") => {
                             let name = block
                                 .get("name")
                                 .and_then(|v| v.as_str())
-                                .unwrap_or("tool")
-                                .to_string();
-                            last.tools.push(HistoryTool { name, result: None });
+                                .unwrap_or("tool");
+                            let raw_input = block.get("input");
+                            let input = raw_input.map(tool_input_summary);
+                            let diff =
+                                raw_input.and_then(|i| tool_diff_from_input(name, i));
+                            last.blocks.push(HistoryBlock::tool(name, input, diff));
                         }
                         _ => {}
                     }
@@ -944,11 +1076,67 @@ pub fn load_chat_history(
     Ok(messages)
 }
 
+/// 代码改动负载：Claude Edit/Write 给结构化 old/new，Codex apply_patch 给补丁原文
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDiffPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
+}
+
+/// 从 Claude 编辑类工具的 input 构造 diff 负载（非编辑类返回 None）
+fn tool_diff_from_input(name: &str, input: &serde_json::Value) -> Option<ToolDiffPayload> {
+    let file_path = input
+        .get("file_path")
+        .or_else(|| input.get("notebook_path"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    match name {
+        "Edit" => Some(ToolDiffPayload {
+            file_path,
+            old_text: input
+                .get("old_string")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            new_text: input
+                .get("new_string")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            patch: None,
+        }),
+        "Write" => Some(ToolDiffPayload {
+            file_path,
+            old_text: None,
+            new_text: input
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            patch: None,
+        }),
+        "NotebookEdit" => Some(ToolDiffPayload {
+            file_path,
+            old_text: None,
+            new_text: input
+                .get("new_source")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            patch: None,
+        }),
+        _ => None,
+    }
+}
+
 /// 流式事件，emit 给前端（事件名 "chat-stream"）
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatStreamEvent {
-    /// text | thinking | tool_use | tool_result | status | done | error
+    /// text | thinking | tool_use | tool_input | tool_result | status | done | error
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delta: Option<String>,
@@ -956,6 +1144,8 @@ pub struct ChatStreamEvent {
     pub tool_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_input: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_diff: Option<ToolDiffPayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -969,6 +1159,7 @@ impl ChatStreamEvent {
             delta: None,
             tool_name: None,
             tool_input: None,
+            tool_diff: None,
             session_id: None,
             error: None,
         }
@@ -986,31 +1177,71 @@ fn tool_input_summary(input: &serde_json::Value) -> String {
     s.chars().take(120).collect()
 }
 
+/// 从 apply_patch 补丁文本提取涉及的文件名摘要
+fn patch_file_summary(patch: &str) -> Option<String> {
+    let files: Vec<&str> = patch
+        .lines()
+        .filter_map(|l| {
+            l.strip_prefix("*** Add File: ")
+                .or_else(|| l.strip_prefix("*** Update File: "))
+                .or_else(|| l.strip_prefix("*** Delete File: "))
+        })
+        .filter_map(|p| p.trim().rsplit('/').next())
+        .collect();
+    if files.is_empty() {
+        None
+    } else {
+        Some(files.join(", ").chars().take(120).collect())
+    }
+}
+
+/// 工具结果摘要：纯文本优先（不带 JSON 引号），供 ⎿ 结果行展示
+fn tool_result_summary(value: &serde_json::Value) -> String {
+    let text = if let Some(s) = value.as_str() {
+        s.to_string()
+    } else if let Some(arr) = value.as_array() {
+        arr.iter()
+            .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        value.to_string()
+    };
+    text.trim().chars().take(400).collect()
+}
+
 /// 发送一条消息，流式跑一轮对话。engine 选 "claude"（默认）或 "codex"。
 /// 通过事件 "chat-stream" 把增量推给前端，结束 emit done（带 session_id 供下一轮 resume）。
 #[tauri::command]
 pub async fn send_chat_message(
     app: AppHandle,
+    state: tauri::State<'_, ChatRunState>,
     message: String,
     resume_id: Option<String>,
     cwd: Option<String>,
     engine: Option<String>,
     model: Option<String>,
+    effort: Option<String>,
 ) -> Result<(), String> {
     let model = model.filter(|m| !m.is_empty() && m != "default");
+    let effort = effort.filter(|e| !e.is_empty() && e != "default");
     match engine.as_deref() {
-        Some("codex") => send_codex_message(app, message, resume_id, cwd, model).await,
-        _ => send_claude_message(app, message, resume_id, cwd, model).await,
+        Some("codex") => {
+            send_codex_message(app, &state, message, resume_id, cwd, model, effort).await
+        }
+        _ => send_claude_message(app, &state, message, resume_id, cwd, model, effort).await,
     }
 }
 
 /// Claude Code 路径：resume_id 为空走新会话（--session-id），否则 --resume。
 async fn send_claude_message(
     app: AppHandle,
+    run_state: &ChatRunState,
     message: String,
     resume_id: Option<String>,
     cwd: Option<String>,
     model: Option<String>,
+    effort: Option<String>,
 ) -> Result<(), String> {
     let bin = resolve_claude_bin().ok_or_else(|| "未找到 claude 可执行文件".to_string())?;
 
@@ -1027,6 +1258,9 @@ async fn send_claude_message(
 
     if let Some(m) = &model {
         cmd.arg("--model").arg(m);
+    }
+    if let Some(e) = &effort {
+        cmd.arg("--effort").arg(e);
     }
 
     match &resume_id {
@@ -1056,6 +1290,7 @@ async fn send_claude_message(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("无法启动 claude：{e}"))?;
+    mark_running(run_state, child.id());
 
     // 写 prompt 到 stdin 后关闭写端
     if let Some(mut stdin) = child.stdin.take() {
@@ -1132,6 +1367,36 @@ async fn send_claude_message(
                     }
                 }
             }
+            // 完整 assistant 记录：补发工具调用的参数摘要（流式 content_block_start 只有名字）
+            "assistant" => {
+                if let Some(content) = json
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array())
+                {
+                    for item in content {
+                        if item.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                            let name = item
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("tool")
+                                .to_string();
+                            let input = item.get("input");
+                            let summary =
+                                input.map(tool_input_summary).unwrap_or_default();
+                            let diff =
+                                input.and_then(|i| tool_diff_from_input(&name, i));
+                            if diff.is_some() || (!summary.is_empty() && summary != "{}") {
+                                let mut ev = ChatStreamEvent::new("tool_input");
+                                ev.tool_name = Some(name);
+                                ev.tool_input = Some(summary);
+                                ev.tool_diff = diff;
+                                let _ = app.emit("chat-stream", &ev);
+                            }
+                        }
+                    }
+                }
+            }
             // 工具结果（user 消息里回写）
             "user" => {
                 if let Some(content) = json
@@ -1143,7 +1408,7 @@ async fn send_claude_message(
                         if item.get("type").and_then(|v| v.as_str()) == Some("tool_result") {
                             let summary = item
                                 .get("content")
-                                .map(|c| tool_input_summary(c))
+                                .map(tool_result_summary)
                                 .unwrap_or_default();
                             let mut ev = ChatStreamEvent::new("tool_result");
                             ev.tool_input = Some(summary);
@@ -1182,6 +1447,7 @@ async fn send_claude_message(
     }
 
     let _ = child.wait().await;
+    finish_running(run_state);
 
     // 结束信号，带上 session_id 供下一轮 resume
     let mut done = ChatStreamEvent::new("done");
@@ -1195,10 +1461,12 @@ async fn send_claude_message(
 /// 事件模型参考 Open Design 的 handleCodexEvent：thread.started / item.* / turn.*。
 async fn send_codex_message(
     app: AppHandle,
+    run_state: &ChatRunState,
     message: String,
     resume_id: Option<String>,
     cwd: Option<String>,
     model: Option<String>,
+    effort: Option<String>,
 ) -> Result<(), String> {
     let bin = resolve_codex_bin().ok_or_else(|| "未找到 codex 可执行文件".to_string())?;
 
@@ -1223,6 +1491,10 @@ async fn send_codex_message(
     if let Some(m) = &model {
         cmd.arg("--model").arg(m);
     }
+    if let Some(e) = &effort {
+        cmd.arg("-c")
+            .arg(format!("model_reasoning_effort=\"{e}\""));
+    }
 
     if let Some(dir) = cwd.as_ref().filter(|d| !d.is_empty()) {
         cmd.current_dir(dir);
@@ -1238,6 +1510,7 @@ async fn send_codex_message(
         .stderr(Stdio::piped());
 
     let mut child = cmd.spawn().map_err(|e| format!("无法启动 codex：{e}"))?;
+    mark_running(run_state, child.id());
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin
@@ -1277,7 +1550,7 @@ async fn send_codex_message(
                 let Some(item) = json.get("item") else { continue };
                 let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match item_type {
-                    // 命令执行：started 发 tool_use，completed 发 tool_result
+                    // 命令执行：started 发 tool_use（名字+命令），completed 发 tool_result
                     "command_execution" => {
                         if typ == "item.started" {
                             let command = item
@@ -1285,8 +1558,8 @@ async fn send_codex_message(
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("shell");
                             let mut ev = ChatStreamEvent::new("tool_use");
-                            ev.tool_name =
-                                Some(format!("$ {}", command.chars().take(48).collect::<String>()));
+                            ev.tool_name = Some("Bash".into());
+                            ev.tool_input = Some(command.chars().take(120).collect());
                             let _ = app.emit("chat-stream", &ev);
                         } else {
                             let output = item
@@ -1294,9 +1567,61 @@ async fn send_codex_message(
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("完成");
                             let mut ev = ChatStreamEvent::new("tool_result");
-                            ev.tool_input = Some(output.chars().take(120).collect());
+                            ev.tool_input = Some(output.trim().chars().take(400).collect());
                             let _ = app.emit("chat-stream", &ev);
                         }
+                    }
+                    // 文件改动（codex 的 file_change 事件只报路径，不带 diff 内容）
+                    "file_change" => {
+                        let paths = item
+                            .get("changes")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|c| c.get("path").and_then(|v| v.as_str()))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
+                            .unwrap_or_default();
+                        if typ == "item.started" {
+                            let mut ev = ChatStreamEvent::new("tool_use");
+                            ev.tool_name = Some("Update".into());
+                            ev.tool_input = Some(paths.chars().take(120).collect());
+                            let _ = app.emit("chat-stream", &ev);
+                        } else {
+                            let mut ev = ChatStreamEvent::new("tool_result");
+                            ev.tool_input = Some("已修改".into());
+                            let _ = app.emit("chat-stream", &ev);
+                        }
+                    }
+                    // apply_patch：input 是自带 +/- 前缀的补丁原文，直接给前端渲染 diff
+                    "custom_tool_call" if typ == "item.completed" => {
+                        let name = item
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("tool");
+                        let input = item
+                            .get("input")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let mut ev = ChatStreamEvent::new("tool_use");
+                        if name == "apply_patch" {
+                            ev.tool_name = Some("Update".into());
+                            ev.tool_input = patch_file_summary(input);
+                            ev.tool_diff = Some(ToolDiffPayload {
+                                file_path: None,
+                                old_text: None,
+                                new_text: None,
+                                patch: Some(input.to_string()),
+                            });
+                        } else {
+                            ev.tool_name = Some(name.to_string());
+                            ev.tool_input = Some(input.chars().take(120).collect());
+                        }
+                        let _ = app.emit("chat-stream", &ev);
+                        let mut done_ev = ChatStreamEvent::new("tool_result");
+                        done_ev.tool_input = Some("完成".into());
+                        let _ = app.emit("chat-stream", &done_ev);
                     }
                     // 最终回复文本（整段到达，不是增量）
                     "agent_message" if typ == "item.completed" => {
@@ -1351,8 +1676,9 @@ async fn send_codex_message(
     }
 
     let status = child.wait().await;
+    let stopped = finish_running(run_state);
     let failed = !matches!(&status, Ok(s) if s.success());
-    if failed && !error_emitted {
+    if failed && !error_emitted && !stopped {
         // clap 的 "error: ..." 在最前面，取头部几行
         let head: String = err_text
             .lines()

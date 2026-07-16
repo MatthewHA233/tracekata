@@ -24,3 +24,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "io-util"] }
 uuid = { version = "1", features = ["v4"] }
+# 锚点域：DashScope 兼容 API（提取/嵌入/簇命名），显式 no_proxy 直连
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
