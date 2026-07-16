@@ -547,19 +547,28 @@ class TrackTreeProvider implements vscode.TreeDataProvider<TreeEntry> {
         command: "tracekata.setupExerciseScene",
         args: [first.id, current.id],
       });
+
+      items.push({
+        kind: "action",
+        label: `运行当前练习 ${current.id}`,
+        description: current.title,
+        command: "tracekata.runExercise",
+        args: [first.id, current.id],
+      });
     }
+
+    items.push({
+      kind: "action",
+      label: "打开题目索引",
+      command: "tracekata.openIndex",
+      args: [first.id],
+    });
 
     items.push({
       kind: "action",
       label: "收成 Memo",
       description: "从对话/剪贴板生成",
       command: "tracekata.captureMemo",
-    });
-
-    items.push({
-      kind: "action",
-      label: "运行练习",
-      command: "tracekata.runExercise",
     });
 
     for (const project of projects) {
@@ -662,15 +671,19 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("tracekata.runExercise", async () => {
+    vscode.commands.registerCommand("tracekata.runExercise", async (projectId?: string, exerciseId?: string) => {
       try {
         const projects = requireProjects();
-        const project = await pickProject(projects);
+        const project = projectId
+          ? projects.find((item) => item.id === projectId)
+          : await pickProject(projects);
         if (!project) {
           return;
         }
 
-        const exercise = await pickExercise(project);
+        const exercise = exerciseId
+          ? getExercise(project, exerciseId)
+          : await pickExercise(project);
         if (!exercise) {
           return;
         }
@@ -690,10 +703,12 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("tracekata.openIndex", async () => {
+    vscode.commands.registerCommand("tracekata.openIndex", async (projectId?: string) => {
       try {
         const projects = requireProjects();
-        const project = await pickProject(projects);
+        const project = projectId
+          ? projects.find((item) => item.id === projectId)
+          : await pickProject(projects);
         if (!project) {
           return;
         }
